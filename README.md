@@ -114,6 +114,11 @@ These are already set up for internal Docker networking via Docker Compose.
 - engine-svc implements GET /health; compose waits for it before starting game-svc.
 
 ---
+## User Interface
+
+![UI Screenshot](ui_screenshot.png)
+
+---
 ## API Overview
 
 ### Engine Service (engine-svc)
@@ -153,7 +158,7 @@ Frontend local dev (optional):
   cd gui
   npm install
   npm run dev
-  open http://localhost:5173
+  # open http://localhost:5173
 
 ---
 ## Troubleshooting
