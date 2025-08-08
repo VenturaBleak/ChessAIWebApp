@@ -1,0 +1,32 @@
+version: "3.9"
+services:
+  engine-svc:
+    build: ./engine-svc
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      # curl is installed in the Dockerfile below
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  game-svc:
+    build: ./game-svc
+    ports:
+      - "8000:8000"
+    environment:
+      - ENGINE_URL=http://engine-svc:8001
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      engine-svc:
+        condition: service_healthy
+
+  gui:
+    build: ./gui
+    ports:
+      - "8080:80"
+    depends_on:
+      - game-svc
