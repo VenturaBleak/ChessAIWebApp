@@ -154,11 +154,11 @@ Tail logs:
 Curl example (engine bestmove):
   curl -X POST http://localhost:8001/bestmove -H "Content-Type: application/json" -d '{"fen":"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1","params":{"depth":3}}'
 
-Frontend local dev (optional):
-  cd gui
-  npm install
-  npm run dev
-  # open http://localhost:5173
+- Frontend local dev (optional):
+  * cd gui
+  * tab npm install
+  * npm run dev
+  * open http://localhost:5173
 
 ---
 ## Troubleshooting
