@@ -6,8 +6,7 @@
 > 2) the **Engine Service** (FastAPI) for UCI search via **Server‑Sent Events (SSE)**.  
 > The two backends **never call each other**.
 
-![UI Screenshot](docs/ui_screenshot.png)
-
+![UI Screenshot](docs/ui_gif.gif)
 ---
 
 ## Table of Contents
@@ -254,4 +253,4 @@ Frontend reverse proxy (in container):
 
 ## License
 
-MIT
+MIT License
