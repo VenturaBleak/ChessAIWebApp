@@ -86,6 +86,7 @@ docker compose up --build
 # Frontend: http://localhost:8080
 # Game API (via nginx proxy): http://localhost:8080/api/...
 # Engine SSE (via nginx proxy): http://localhost:8080/engines/...
+
 ```
 
 Compose stands up three containers on the `chessnet` network:
