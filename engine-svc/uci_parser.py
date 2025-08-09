@@ -7,7 +7,9 @@ import shlex
 from typing import Dict, List
 
 def parse_info_line(line: str) -> Dict:
-    # Example: info depth 14 seldepth 20 nodes 123456 nps 2500000 score cp 23 pv e2e4 e7e5
+    # Examples:
+    #   info depth 14 nodes 123456 nps 2500000 score cp 23 pv e2e4 e7e5
+    #   info string dbg=done elapsed=1.999s nodes=123456
     parts = shlex.split(line.strip())
     out: Dict = {}
     it = iter(parts)
@@ -29,5 +31,9 @@ def parse_info_line(line: str) -> Dict:
                 out['score'] = {'mate': int(val)}
         elif tok == 'pv':
             out['pv'] = list(it)
+            break
+        elif tok == 'string':
+            # The rest of the tokens form a free-form message
+            out['string'] = ' '.join(list(it))
             break
     return out
