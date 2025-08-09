@@ -6,7 +6,7 @@
 > 2) the **Engine Service** (FastAPI) for UCI search via **Server‑Sent Events (SSE)**.  
 > The two backends **never call each other**.
 
-![UI Screenshot](assets/ui_screenshot.png)
+![UI Screenshot](docs/ui_screenshot.png)
 
 ---
 
@@ -86,7 +86,6 @@ docker compose up --build
 # Frontend: http://localhost:8080
 # Game API (via nginx proxy): http://localhost:8080/api/...
 # Engine SSE (via nginx proxy): http://localhost:8080/engines/...
-
 ```
 
 Compose stands up three containers on the `chessnet` network:
@@ -255,4 +254,4 @@ Frontend reverse proxy (in container):
 
 ## License
 
-MIT.
+MIT
