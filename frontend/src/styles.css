@@ -1,0 +1,79 @@
+:root, body, #root {
+  height: 100%;
+}
+body {
+  background: #0f1115;
+}
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: min-content 1fr minmax(260px, 320px);
+  gap: 16px;
+  align-items: start;
+}
+
+/* Middle column stacks controls + stream */
+.middle-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.controls-card {
+  position: sticky;
+  top: 16px;
+}
+.state-card {}
+.stream-card {}
+.stream-log {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  white-space: pre-wrap;
+}
+.button-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* --- Tile-based controls grid --- */
+.tiles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.tile {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 1px 6px rgba(0,0,0,0.2);
+}
+
+/* Visual greying for disabled tiles */
+.tile[data-disabled="true"] {
+  opacity: 0.55;
+}
+
+/* Make disabled buttons clearly greyed out */
+.MuiButton-root.Mui-disabled {
+  opacity: 0.5;
+  filter: grayscale(0.4);
+}
+
+/* Ensure a consistent control size */
+.fixed-width {
+  min-width: 120px !important;
+  height: 40px !important;
+}

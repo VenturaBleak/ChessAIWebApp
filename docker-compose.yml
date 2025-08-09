@@ -1,32 +1,34 @@
-version: "3.9"
+# Path: docker-compose.yml
+# Purpose: Local development runner for the modular chess stack (frontend, game-svc, engine-svc).
+# Usage: docker compose up --build; visit http://localhost:5173
+
 services:
   engine-svc:
     build: ./engine-svc
-    ports:
-      - "8001:8001"
     environment:
-      - PYTHONUNBUFFERED=1
-    healthcheck:
-      # curl is installed in the Dockerfile below
-      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
+      UCI_ENGINE_PATH: /app/uci_reference_engine.py
+      UCI_ENGINE_CMD: "python /app/uci_reference_engine.py"
+      ENGINE_READY_TIMEOUT_MS: "5000"
+    networks: [chessnet]
 
   game-svc:
     build: ./game-svc
+    environment:
+      ENGINE_SVC_URL: http://engine-svc:8001
+    depends_on:
+      - engine-svc
     ports:
       - "8000:8000"
-    environment:
-      - ENGINE_URL=http://engine-svc:8001
-      - PYTHONUNBUFFERED=1
-    depends_on:
-      engine-svc:
-        condition: service_healthy
+    networks: [chessnet]
 
-  gui:
-    build: ./gui
+  frontend:
+    build: ./frontend
     ports:
       - "8080:80"
     depends_on:
       - game-svc
+    networks:
+      - chessnet
+
+networks:
+  chessnet: {}
