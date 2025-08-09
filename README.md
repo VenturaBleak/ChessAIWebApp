@@ -253,4 +253,4 @@ Frontend reverse proxy (in container):
 
 ## License
 
-MIT
+MIT License
