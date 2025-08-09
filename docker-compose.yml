@@ -1,6 +1,6 @@
 # Path: docker-compose.yml
 # Purpose: Local development runner for the modular chess stack (frontend, game-svc, engine-svc).
-# Usage: docker compose up --build; visit http://localhost:5173
+# Usage: docker compose up --build; visit http://localhost:8080
 
 services:
   engine-svc:

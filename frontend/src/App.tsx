@@ -1,329 +1,464 @@
 // Path: frontend/src/App.tsx
-/**
- * Tile-based chess UI
- * - Modes: HUMAN_VS_HUMAN, HUMAN_VS_AI, AI_VS_AI.
- * - Single "Black AI ms" control is used in BOTH HUMAN_VS_AI and AI_VS_AI.
- * - "White AI ms" is only for AI_VS_AI.
- * - In HUMAN_VS_HUMAN: Black AI ms is present but disabled (greyed).
- * - Pause/Resume (fixed-size) pauses AI turns only.
- * - Stream panel sits under the controls grid (same middle column).
- * - Disabled controls are greyed out; tiles reflect disabled state.
- * - Type-only import for chess Move to avoid runtime import errors.
- */
+// NOTE: visuals unchanged. Only diagnostic logs added.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Box, Button, Card, CardContent, FormControl, InputLabel, MenuItem,
-  Select, Stack, TextField, Typography
+  Box, Button, Card, CardContent, Divider, FormControl, Grid, InputLabel,
+  MenuItem, Select, TextField, Typography
 } from '@mui/material'
 import { Chess } from 'chess.js'
-import type { Move } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
-import type { GameMode, GameState } from './types'
-import { useEventSource } from './hooks/useEventSource'
+import {
+  newGame, getState, postMove, think, selfPlayStart, engineStop,
+  decodeUCIMove, type GameState
+} from './api'
 
-type Side = 'white' | 'black'
-
-function computeState(game: Chess): GameState {
-  const over = game.isGameOver()
-  let result: GameState['result'] | undefined
-  if (over) {
-    if (game.isCheckmate()) result = game.turn() === 'w' ? '0-1' : '1-0'
-    else if (game.isDraw() || game.isStalemate() || game.isThreefoldRepetition() || game.isInsufficientMaterial())
-      result = '1/2-1/2'
-  }
-  return {
-    fen: game.fen(),
-    turn: game.turn(),
-    over,
-    result,
-    legalMoves: (game.moves({ verbose: true }) as any[]).map((m: any) => `${m.from}${m.to}${m.promotion ?? ''}`)
-  }
-}
-
-function pickAiMove(game: Chess): Move | null {
-  const legal = game.moves({ verbose: true }) as Move[]
-  if (!legal.length) return null
-  const val: Record<string, number> = { p:1,n:3,b:3,r:5,q:9,k:0 }
-  let best: Move[] = []
-  let score = -Infinity
-  for (const m of legal) {
-    const s = (m as any).captured ? val[(m as any).captured] ?? 0 : 0
-    if (s > score) { score = s; best = [m] }
-    else if (s === score) best.push(m)
-  }
-  const pool = best.length ? best : legal
-  return pool[Math.floor(Math.random() * pool.length)]
-}
+type Mode = 'HUMAN_VS_HUMAN' | 'HUMAN_VS_AI' | 'AI_VS_AI'
 
 export default function App() {
-  const [mode, setMode] = useState<GameMode>('HUMAN_VS_HUMAN')
-  const [whiteMs, setWhiteMs] = useState(350)
-  const [blackMs, setBlackMs] = useState(350)
-  const [started, setStarted] = useState(false)
-  const [paused, setPaused] = useState(false)
+  const [mode, setMode] = useState<Mode>('HUMAN_VS_AI')
+  const [gameId, setGameId] = useState<string>('')
+  const [state, setState] = useState<GameState>({
+    gameId: '', fen: new Chess().fen(), turn: 'w', over: false, legalMoves: []
+  })
+  const [isSelfPlaying, setIsSelfPlaying] = useState(false)
+  const [hasEverSelfPlayed, setHasEverSelfPlayed] = useState(false)
+  const [pendingThink, setPendingThink] = useState(false)
 
-  const gameRef = useRef(new Chess())
-  const [state, setState] = useState<GameState>(() => computeState(gameRef.current))
+  const [whiteDepth, setWhiteDepth] = useState<number>(6)
+  const [whiteRollouts, setWhiteRollouts] = useState<number>(150)
+  const [blackDepth, setBlackDepth] = useState<number>(6)
+  const [blackRollouts, setBlackRollouts] = useState<number>(150)
 
-  // AI timer
-  const aiTimer = useRef<number | null>(null)
-  const clearTimer = useCallback(() => {
-    if (aiTimer.current !== null) {
-      window.clearTimeout(aiTimer.current)
-      aiTimer.current = null
+  const esRef = useRef<EventSource | null>(null)
+  const openStream = useCallback((es: EventSource) => {
+    // eslint-disable-next-line no-console
+    console.debug('[UI] openStream (closing previous?)', !!esRef.current)
+    if (esRef.current) esRef.current.close()
+    esRef.current = es
+  }, [])
+  const closeStream = useCallback(() => {
+    if (esRef.current) {
+      // eslint-disable-next-line no-console
+      console.debug('[UI] closeStream')
+      esRef.current.close()
+      esRef.current = null
     }
   }, [])
-  const resetGame = useCallback(() => {
-    clearTimer()
-    gameRef.current = new Chess()
-    setState(computeState(gameRef.current))
-  }, [clearTimer])
 
-  // --- SSE (optional) ---
-  const [sseLines, setSseLines] = useState<string[]>([])
-  const [sseConnected, setSseConnected] = useState(false)
-  const sseUrl = import.meta.env.VITE_DEMO_SSE_URL as string | undefined
-  const { connect: sseConnect, close: sseClose } = useEventSource(
-    (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        setSseLines(prev => [...prev.slice(-500), JSON.stringify(data)])
-      } catch {
-        setSseLines(prev => [...prev.slice(-500), e.data])
-      }
-    },
-    () => setSseConnected(false)
-  )
+  const isHumanVsHuman = mode === 'HUMAN_VS_HUMAN'
+  const isHumanVsAI = mode === 'HUMAN_VS_AI'
+  const isAIVsAI = mode === 'AI_VS_AI'
+
+  const canStart = isAIVsAI && !!gameId && !state.over && !isSelfPlaying
+  const canPauseResume = isAIVsAI && !!gameId && !state.over && (isSelfPlaying || hasEverSelfPlayed)
+
+  useEffect(() => () => closeStream(), [closeStream])
+
   useEffect(() => {
-    if (!started || !sseUrl) {
-      setSseConnected(false)
-      sseClose()
-      return
+    closeStream()
+    setIsSelfPlaying(false)
+    setHasEverSelfPlayed(false)
+    setPendingThink(false)
+    // eslint-disable-next-line no-console
+    console.debug('[UI] mode changed', { mode })
+  }, [mode, closeStream])
+
+  useEffect(() => {
+    if (!gameId) return
+    // eslint-disable-next-line no-console
+    console.debug('[UI] getState on gameId change', gameId)
+    getState(gameId).then(s => {
+      // eslint-disable-next-line no-console
+      console.debug('[UI] getState result', s)
+      setState(s)
+    }).catch(e => console.error('[UI] getState failed', e))
+  }, [gameId])
+
+  // Bootstrap
+  useEffect(() => {
+    let cancelled = false
+    async function ensureGame() {
+      try {
+        const saved = localStorage.getItem('lastGameId') || ''
+        // eslint-disable-next-line no-console
+        console.debug('[UI] bootstrap: saved lastGameId', saved)
+        if (saved) {
+          try {
+            const gs = await getState(saved)
+            if (!cancelled) {
+              // eslint-disable-next-line no-console
+              console.debug('[UI] bootstrap: resumed game', gs.gameId)
+              setGameId(gs.gameId)
+              setState(gs)
+              return
+            }
+          } catch (e) {
+            console.warn('[UI] bootstrap: stale lastGameId', saved, e)
+          }
+        }
+        const fresh = await newGame(mode)
+        if (!cancelled) {
+          // eslint-disable-next-line no-console
+          console.debug('[UI] bootstrap: created fresh game', fresh.gameId)
+          setGameId(fresh.gameId)
+          setState(fresh)
+          localStorage.setItem('lastGameId', fresh.gameId)
+        }
+      } catch (e) {
+        console.error('bootstrap: failed to ensure game', e)
+      }
     }
-    const es = sseConnect(sseUrl)
-    setSseConnected(true)
-    return () => { es?.close?.(); setSseConnected(false) }
-  }, [started, sseUrl, sseConnect, sseClose])
-
-  // --- Derived flags ---
-  const isHvH = mode === 'HUMAN_VS_HUMAN'
-  const isHvAI = mode === 'HUMAN_VS_AI'
-  const isAivAI = mode === 'AI_VS_AI'
-  const anyAIActive = useMemo(() => (isHvAI || isAivAI), [isHvAI, isAivAI])
-
-  // --- Actions ---
-  const start = useCallback(() => {
-    setStarted(true)
-    setPaused(false)
+    if (!gameId) ensureGame()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  const restart = useCallback(() => {
-    setStarted(false)
-    setPaused(false)
-    resetGame()
-  }, [resetGame])
 
-  // Schedule a single AI move for the side to move
-  const scheduleAiMove = useCallback((delayMs: number) => {
-    clearTimer()
-    if (paused) return
-    aiTimer.current = window.setTimeout(() => {
-      if (paused) return
-      const g = gameRef.current
-      if (g.isGameOver()) return
-      const mv = pickAiMove(g)
-      if (!mv) return
-      g.move(mv)
-      setState(computeState(g))
-    }, Math.max(0, delayMs | 0))
-  }, [clearTimer, paused])
-
-  const scheduleNextForMode = useCallback(() => {
-    if (!started || state.over || paused) return
-    const toMove: Side = state.turn === 'w' ? 'white' : 'black'
-    if (isAivAI) {
-      const delay = toMove === 'white' ? whiteMs : blackMs
-      scheduleAiMove(delay)
-      return
+  const handleNewGame = useCallback(async () => {
+    try {
+      // eslint-disable-next-line no-console
+      console.debug('[UI] New Game click', { mode })
+      closeStream()
+      setIsSelfPlaying(false)
+      setHasEverSelfPlayed(false)
+      setPendingThink(false)
+      const gs = await newGame(mode)
+      // eslint-disable-next-line no-console
+      console.debug('[UI] New Game created', gs.gameId)
+      setGameId(gs.gameId)
+      setState(gs)
+      localStorage.setItem('lastGameId', gs.gameId)
+    } catch (e) {
+      console.error(e)
+      alert('Failed to start a new game. Check backend.')
     }
-    if (isHvAI && toMove === 'black') {
-      scheduleAiMove(blackMs)
-    }
-  }, [started, state.over, paused, state.turn, isAivAI, isHvAI, whiteMs, blackMs, scheduleAiMove])
+  }, [mode, closeStream])
 
-  const togglePause = useCallback(() => {
-    if (!started || state.over || !anyAIActive) return
-    if (paused) {
-      setPaused(false)
-      scheduleNextForMode()
+  const handleStart = useCallback(async () => {
+    if (!gameId || !isAIVsAI || state.over || isSelfPlaying) return
+    // eslint-disable-next-line no-console
+    console.debug('[UI] Start selfplay', {
+      gameId, fen: state.fen,
+      whiteDepth, whiteRollouts, blackDepth, blackRollouts
+    })
+    const es = selfPlayStart(
+      state.fen,
+      whiteDepth, whiteRollouts,
+      blackDepth, blackRollouts
+    )
+    es.onopen = () => console.debug('[ENGINE/selfplay] open')
+    es.onmessage = async (e) => {
+      // eslint-disable-next-line no-console
+      console.debug('[ENGINE/selfplay] onmessage raw', e.data)
+      try {
+        const msg = JSON.parse(e.data)
+        // eslint-disable-next-line no-console
+        console.debug('[ENGINE/selfplay] parsed', msg)
+        if (msg.type === 'bestmove' && typeof msg.move === 'string') {
+          const { from, to, promotion } = decodeUCIMove(msg.move)
+          // eslint-disable-next-line no-console
+          console.debug('[ENGINE/selfplay] bestmove → postMove', { gameId, from, to, promotion })
+          const next = await postMove(gameId, from, to, promotion)
+          // eslint-disable-next-line no-console
+          console.debug('[ENGINE/selfplay] postMove OK', next.fen)
+          setState(next)
+          localStorage.setItem('lastGameId', next.gameId)
+        } else if (msg.type === 'done') {
+          console.debug('[ENGINE/selfplay] done')
+          setIsSelfPlaying(false)
+          closeStream()
+        } else {
+          console.debug('[ENGINE/selfplay] info/other', msg)
+        }
+      } catch (err) {
+        console.error('[ENGINE/selfplay] parse/apply failed', err, e.data)
+      }
+    }
+    es.onerror = (err) => {
+      console.error('[ENGINE/selfplay] error', err)
+      setIsSelfPlaying(false)
+      closeStream()
+    }
+    openStream(es)
+    setIsSelfPlaying(true)
+    setHasEverSelfPlayed(true)
+  }, [
+    gameId, isAIVsAI, state.over, isSelfPlaying, state.fen,
+    whiteDepth, whiteRollouts, blackDepth, blackRollouts,
+    openStream, closeStream
+  ])
+
+  const handlePauseResume = useCallback(async () => {
+    if (!gameId || !isAIVsAI || state.over) return
+    if (isSelfPlaying) {
+      console.debug('[UI] Pause (engineStop)')
+      try { await engineStop() } finally {
+        setIsSelfPlaying(false)
+        closeStream()
+      }
     } else {
-      setPaused(true)
-      clearTimer()
+      console.debug('[UI] Resume (start)')
+      handleStart()
     }
-  }, [clearTimer, paused, scheduleNextForMode, started, state.over, anyAIActive])
+  }, [gameId, isAIVsAI, state.over, isSelfPlaying, handleStart, closeStream])
 
-  // After any state change, if AI should move, schedule it
-  useEffect(() => { scheduleNextForMode() }, [scheduleNextForMode])
+  const onPieceDrop = useCallback(async (source: string, target: string) => {
+    // eslint-disable-next-line no-console
+    console.debug('[UI] onPieceDrop', { source, target, gameId, mode, turn: state.turn })
+    if (!gameId || state.over) return false
+    if (isAIVsAI) return false
+    if (isHumanVsAI && state.turn !== 'w') return false
 
-  // When unpausing, schedule next AI move
-  useEffect(() => { if (!paused) scheduleNextForMode() }, [paused, scheduleNextForMode])
+    try {
+      console.debug('[UI] postMove (human)', { source, target })
+      const next = await postMove(gameId, source, target)
+      console.debug('[UI] postMove OK (human)', next.fen)
+      setState(next)
+      localStorage.setItem('lastGameId', next.gameId)
 
-  // Clean up on unmount
-  useEffect(() => () => clearTimer(), [clearTimer])
+      if (isHumanVsAI && !next.over) {
+        if (pendingThink) { console.debug('[UI] think suppressed: pending'); return true }
+        setPendingThink(true)
 
-  // --- Board interactivity ---
-  const isHumanTurn = useMemo(() => {
-    if (!started || state.over) return false
-    if (isAivAI) return false
-    if (isHvAI) return state.turn === 'w' // human is White in HvAI
-    // HvH
-    return true
-  }, [started, state.over, state.turn, isAivAI, isHvAI])
+        console.debug('[ENGINE/think] start', {
+          fen: next.fen, side: 'black', depth: blackDepth, rollouts: blackRollouts
+        })
+        const es = think(next.fen, 'black', blackDepth, blackRollouts)
+        es.onopen = () => console.debug('[ENGINE/think] open')
+        es.onmessage = async (e) => {
+          console.debug('[ENGINE/think] onmessage raw', e.data)
+          try {
+            const msg = JSON.parse(e.data)
+            console.debug('[ENGINE/think] parsed', msg)
+            if (msg.type === 'bestmove' && typeof msg.move === 'string') {
+              const { from, to, promotion } = decodeUCIMove(msg.move)
+              console.debug('[ENGINE/think] bestmove → postMove', { gameId, from, to, promotion })
+              const after = await postMove(gameId, from, to, promotion)
+              console.debug('[ENGINE/think] postMove OK', after.fen)
+              setState(after)
+              localStorage.setItem('lastGameId', after.gameId)
+            } else if (msg.type === 'done') {
+              console.debug('[ENGINE/think] done')
+              setPendingThink(false)
+              closeStream()
+            } else {
+              console.debug('[ENGINE/think] info/other', msg)
+            }
+          } catch (err) {
+            console.error('[ENGINE/think] parse/apply failed', err, e.data)
+          }
+        }
+        es.onerror = (err) => {
+          console.error('[ENGINE/think] error', err)
+          setPendingThink(false)
+          closeStream()
+        }
+        openStream(es)
+      }
+      return true
+    } catch (e) {
+      console.error('[UI] onPieceDrop failed', e)
+      return false
+    }
+  }, [
+    gameId, state.over, isAIVsAI, isHumanVsAI, state.turn, pendingThink,
+    blackDepth, blackRollouts, openStream, closeStream
+  ])
 
-  const onPieceDrop = useCallback((from: string, to: string) => {
-    if (!isHumanTurn) return false
-    const g = gameRef.current
-    const move = g.move({ from, to, promotion: 'q' })
-    if (!move) return false
-    setState(computeState(g))
-    return true
-  }, [isHumanTurn])
+  const boardOrientation = useMemo<'white' | 'black'>(() => 'white', [])
+  const onNum = (setter: (n: number) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseInt(e.target.value || '0', 10)
+    if (Number.isNaN(v)) return
+    setter(Math.max(1, v))
+  }
 
-  const statusText = useMemo(() => {
-    if (!started) return 'Click Start to begin.'
-    if (state.over) return `Game over ${state.result ?? ''}`
-    if (paused) return 'Paused'
-    const turnText = state.turn === 'w' ? 'White' : 'Black'
-    if (isHvAI) return `${turnText} to move (Black is AI)`
-    if (isAivAI) return `${turnText} to move (AI vs AI)`
-    return `${turnText} to move`
-  }, [started, state.over, state.result, state.turn, paused, isHvAI, isAivAI])
+  // ────────────────────────────────────────────────────────────────────────────
+  // UI MARKUP (unchanged visuals)
+  // ────────────────────────────────────────────────────────────────────────────
 
-  // --- JSX ---
   return (
-    <Box p={2} className="app-shell" sx={{ bgcolor: 'background.default', color: 'text.primary' }}>
-      {/* Board (left column) */}
-      <Stack spacing={1} alignItems="center">
-        <Chessboard
-          id="board"
-          position={state.fen}
-          arePiecesDraggable={isHumanTurn}
-          onPieceDrop={onPieceDrop}
-          boardWidth={520}
-          customBoardStyle={{ borderRadius: 8, boxShadow: '0 2px 12px rgba(0,0,0,0.1)' }}
-        />
-        <Typography variant="subtitle2">{statusText}</Typography>
-      </Stack>
-
-      {/* Middle column: Controls + Stream stacked */}
-      <Box className="middle-col">
-        {/* Controls */}
-        <Card className="controls-card" sx={{ p: 2 }}>
-          <CardContent>
-            <Box className="tiles-grid">
-              {/* Mode select */}
-              <Box className="tile" data-disabled={String(started)}>
-                <FormControl size="small" fullWidth>
-                  <InputLabel id="mode-label">Mode</InputLabel>
-                  <Select
-                    labelId="mode-label"
-                    label="Mode"
-                    value={mode}
-                    onChange={(e) => setMode(e.target.value as GameMode)}
-                    disabled={started}
-                  >
-                    <MenuItem value="HUMAN_VS_HUMAN">Human vs Human</MenuItem>
-                    <MenuItem value="HUMAN_VS_AI">Human vs AI</MenuItem>
-                    <MenuItem value="AI_VS_AI">AI vs AI</MenuItem>
-                  </Select>
-                </FormControl>
+    <Box p={2}>
+      <Grid container spacing={2}>
+        {/* Board column (smaller footprint) */}
+        <Grid item xs={12} md={5} lg={6}>
+          <Card>
+            <CardContent sx={{ p: 1.5 }}>
+              <Chessboard
+                id="board"
+                position={state.fen}
+                boardWidth={420}
+                customBoardStyle={{ borderRadius: 8 }}
+                onPieceDrop={onPieceDrop}
+                boardOrientation={boardOrientation}
+                arePiecesDraggable={
+                  !isAIVsAI && !state.over && !(isHumanVsAI && state.turn !== 'w')
+                }
+              />
+              <Box mt={1.5}>
+                <Typography variant="body2" color="text.secondary">
+                  Game: {gameId || '-'}
+                  {' • '}Turn: {state.turn}
+                  {' • '}Over: {String(state.over)}
+                  {state.result ? ` (${state.result})` : ''}
+                </Typography>
               </Box>
+            </CardContent>
+          </Card>
+        </Grid>
 
-              {/* White AI ms: only relevant in AI_VS_AI, and never disabled in that mode */}
-              <Box className="tile" data-disabled={String(!isAivAI)}>
-                <TextField
-                  label="White AI ms"
-                  type="number"
-                  size="small"
-                  fullWidth
-                  value={whiteMs}
-                  onChange={(e) => setWhiteMs(Math.max(0, Number(e.target.value || 0)))}
-                  inputProps={{ min: 0, step: 50 }}
-                  disabled={!isAivAI}
-                />
-              </Box>
+        {/* Settings + controls column */}
+        <Grid item xs={12} md={7} lg={6}>
+          <Card>
+            <CardContent>
+              <Grid container spacing={2}>
+                <Grid item xs={12}>
+                  <FormControl size="small" fullWidth>
+                    <InputLabel id="mode-label">Mode</InputLabel>
+                    <Select
+                      labelId="mode-label" label="Mode" value={mode}
+                      onChange={(e) => setMode(e.target.value as Mode)}
+                    >
+                      <MenuItem value="HUMAN_VS_HUMAN">Human vs Human</MenuItem>
+                      <MenuItem value="HUMAN_VS_AI">Human vs AI</MenuItem>
+                      <MenuItem value="AI_VS_AI">AI vs AI</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
 
-              {/* Black AI ms: disabled (greyed) in HUMAN_VS_HUMAN; enabled in HUMAN_VS_AI and AI_VS_AI */}
-              <Box className="tile" data-disabled={String(isHvH)}>
-                <TextField
-                  label="Black AI ms"
-                  type="number"
-                  size="small"
-                  fullWidth
-                  value={blackMs}
-                  onChange={(e) => setBlackMs(Math.max(0, Number(e.target.value || 0)))}
-                  inputProps={{ min: 0, step: 50 }}
-                  disabled={isHvH}
-                />
-              </Box>
+                <Grid item xs={12}>
+                  <Grid container spacing={1}>
+                    <Grid item xs={12} sm={4}>
+                      <Button fullWidth onClick={handleStart} disabled={!canStart}>
+                        Start
+                      </Button>
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <Button fullWidth onClick={handlePauseResume} disabled={!canPauseResume}>
+                        {isSelfPlaying ? 'Pause' : 'Resume'}
+                      </Button>
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <Button fullWidth color="secondary" onClick={handleNewGame}>
+                        New Game
+                      </Button>
+                    </Grid>
+                  </Grid>
+                </Grid>
 
-              <Box className="tile" data-disabled={String(started)}>
-                <Button className="fixed-width" onClick={start} disabled={started} fullWidth>
-                  Start
-                </Button>
-              </Box>
+                {(isHumanVsAI || isAIVsAI) && (
+                  <>
+                    <Grid item xs={12}>
+                      <Divider />
+                    </Grid>
 
-              <Box className="tile" data-disabled={String(!started)}>
-                <Button className="fixed-width" variant="outlined" onClick={restart} disabled={!started} fullWidth>
-                  Restart
-                </Button>
-              </Box>
+                    {isHumanVsAI && (
+                      <Grid item xs={12}>
+                        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                          AI (Black)
+                        </Typography>
+                        <Grid container spacing={1.5}>
+                          <Grid item xs={6}>
+                            <TextField
+                              label="Depth"
+                              type="number"
+                              size="small"
+                              fullWidth
+                              inputProps={{ min: 1 }}
+                              value={blackDepth}
+                              onChange={onNum(setBlackDepth)}
+                            />
+                          </Grid>
+                          <Grid item xs={6}>
+                            <TextField
+                              label="Rollouts"
+                              type="number"
+                              size="small"
+                              fullWidth
+                              inputProps={{ min: 1 }}
+                              value={blackRollouts}
+                              onChange={onNum(setBlackRollouts)}
+                            />
+                          </Grid>
+                        </Grid>
+                      </Grid>
+                    )}
 
-              <Box className="tile" data-disabled={String(!started || state.over || !anyAIActive)}>
-                <Button
-                  className="fixed-width"
-                  onClick={togglePause}
-                  disabled={!started || state.over || !anyAIActive}
-                  fullWidth
-                >
-                  {paused ? 'Resume' : 'Pause'}
-                </Button>
-              </Box>
-            </Box>
-          </CardContent>
-        </Card>
+                    {isAIVsAI && (
+                      <>
+                        <Grid item xs={12}>
+                          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                            White AI
+                          </Typography>
+                          <Grid container spacing={1.5}>
+                            <Grid item xs={6}>
+                              <TextField
+                                label="Depth"
+                                type="number"
+                                size="small"
+                                fullWidth
+                                inputProps={{ min: 1 }}
+                                value={whiteDepth}
+                                onChange={onNum(setWhiteDepth)}
+                              />
+                            </Grid>
+                            <Grid item xs={6}>
+                              <TextField
+                                label="Rollouts"
+                                type="number"
+                                size="small"
+                                fullWidth
+                                inputProps={{ min: 1 }}
+                                value={whiteRollouts}
+                                onChange={onNum(setWhiteRollouts)}
+                              />
+                            </Grid>
+                          </Grid>
+                        </Grid>
 
-        {/* Stream sits UNDER the buttons grid in the same middle column */}
-        <Card className="stream-card" sx={{ p: 2 }}>
-          <CardContent>
-            <Typography variant="subtitle1" gutterBottom>Engine Stream</Typography>
-            <Box className="button-row" sx={{ mb: 1 }}>
-              <Typography variant="body2">Status:&nbsp;</Typography>
-              <Typography variant="body2" className="mono">
-                {sseConnected ? 'connected' : sseUrl ? 'connecting/idle' : 'disabled'}
-              </Typography>
-            </Box>
-            <Box className="stream-log" id="stream-log">
-              {sseLines.map((l, i) => (<div key={i}>{l}</div>))}
-            </Box>
-          </CardContent>
-        </Card>
-      </Box>
+                        <Grid item xs={12}>
+                          <Typography variant="subtitle2" sx={{ mb: 1, mt: 1 }}>
+                            Black AI
+                          </Typography>
+                          <Grid container spacing={1.5}>
+                            <Grid item xs={6}>
+                              <TextField
+                                label="Depth"
+                                type="number"
+                                size="small"
+                                fullWidth
+                                inputProps={{ min: 1 }}
+                                value={blackDepth}
+                                onChange={onNum(setBlackDepth)}
+                              />
+                            </Grid>
+                            <Grid item xs={6}>
+                              <TextField
+                                label="Rollouts"
+                                type="number"
+                                size="small"
+                                fullWidth
+                                inputProps={{ min: 1 }}
+                                value={blackRollouts}
+                                onChange={onNum(setBlackRollouts)}
+                              />
+                            </Grid>
+                          </Grid>
+                        </Grid>
+                      </>
+                    )}
+                  </>
+                )}
 
-      {/* Right column: State */}
-      <Card className="state-card" sx={{ p: 2, minWidth: 260 }}>
-        <CardContent>
-          <Typography variant="subtitle1" gutterBottom>State</Typography>
-          <Box className="mono" sx={{ fontSize: 12 }}>
-            <div>Started: {String(started)}</div>
-            <div>Paused: {String(paused)}</div>
-            <div>Mode: {mode}</div>
-            <div>FEN: {state.fen}</div>
-            <div>Turn: {state.turn}</div>
-            <div>Over: {String(state.over)} {state.result ? `(${state.result})` : ''}</div>
-            <div>Legal: {state.legalMoves.join(' ')}</div>
-          </Box>
-        </CardContent>
-      </Card>
+                <Grid item xs={12}>
+                  <Typography variant="caption" color="text.secondary">
+                    Start/Pause are enabled only in AI vs AI. In Human vs AI, AI plays as Black using the settings above.
+                  </Typography>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
     </Box>
   )
 }

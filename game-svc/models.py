@@ -1,13 +1,23 @@
 # Path: game-svc/models.py
 """
-Purpose: Pydantic models for API contracts between frontend and orchestrator.
-Usage: Imported by app.py and orchestrator.py.
+Pydantic models for API contracts between frontend and game service.
 """
-from pydantic import BaseModel, Field
+from __future__ import annotations
+
 from typing import Literal, Optional, List
+from pydantic import BaseModel, Field, ConfigDict
 
 class NewGameRequest(BaseModel):
-    mode: Literal['HUMAN_VS_AI', 'AI_VS_AI']
+    mode: Literal['HUMAN_VS_AI', 'AI_VS_AI', 'HUMAN_VS_HUMAN'] = 'HUMAN_VS_AI'
+
+class MoveRequest(BaseModel):
+    # Accept the frontend's {from, to, promotion?}
+    from_square: str = Field(..., min_length=2, max_length=2, alias='from', description="from square (e.g., e2)")
+    to_square: str = Field(..., min_length=2, max_length=2, alias='to', description="to square (e.g., e4)")
+    promotion: Optional[str] = Field(None, min_length=1, max_length=1, description="promotion piece in SAN letter (q,r,b,n)")
+
+    # Pydantic v2: use model_config, not class Config
+    model_config = ConfigDict(populate_by_name=True)
 
 class GameStateDTO(BaseModel):
     gameId: str
@@ -15,24 +25,4 @@ class GameStateDTO(BaseModel):
     turn: Literal['w', 'b']
     over: bool
     result: Optional[Literal['1-0','0-1','1/2-1/2']] = None
-    legalMoves: List[str]
-
-class HumanMoveRequest(BaseModel):
-    uci: str
-
-class AiMoveRequest(BaseModel):
-    movetimeMs: int = Field(ge=1, description="Time budget for this move in milliseconds")
-
-class InsightEvent(BaseModel):
-    gameId: str
-    side: Literal['white', 'black']
-    stage: Literal['searching', 'done', 'error']
-    elapsed_ms: Optional[int] = None
-    depth: Optional[int] = None
-    seldepth: Optional[int] = None
-    nodes: Optional[int] = None
-    nps: Optional[int] = None
-    score: Optional[dict] = None
-    pv: Optional[List[str]] = None
-    bestmove: Optional[str] = None
-    message: Optional[str] = None
+    legalMoves: List[str] = Field(default_factory=list)  # avoid mutable default

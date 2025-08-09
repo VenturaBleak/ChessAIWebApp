@@ -1,4 +1,4 @@
-# engine-svc/Dockerfile
+# Path: engine-svc/Dockerfile
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,14 +10,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt ./
-
-# ⚠️ Do NOT self-upgrade pip/setuptools here — flaky networks can stall on files.pythonhosted.org
-RUN python -m pip install --no-cache-dir --retries ${PIP_RETRIES} --timeout ${PIP_DEFAULT_TIMEOUT} \
-      --index-url https://pypi.org/simple \
-      -r requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Default to included reference engine; override in compose:
+#   environment:
+#     UCI_ENGINE_CMD: "stockfish"
 ENV UCI_ENGINE_PATH=/app/uci_reference_engine.py
 ENV UCI_ENGINE_CMD="python /app/uci_reference_engine.py"
 

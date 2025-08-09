@@ -10,12 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt ./
-
-# Harden installs against flaky PyPI timeouts (no self-upgrade of pip)
-RUN python -m pip install --no-cache-dir \
-      --retries ${PIP_RETRIES} --timeout ${PIP_DEFAULT_TIMEOUT} \
-      --index-url https://pypi.org/simple \
-      -r requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 EXPOSE 8000

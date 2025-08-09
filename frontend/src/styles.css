@@ -1,79 +1,73 @@
+/* Path: frontend/src/styles.css */
 :root, body, #root {
   height: 100%;
 }
 body {
   background: #0f1115;
+  color: #e5e7eb;
 }
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: min-content 1fr minmax(260px, 320px);
+  grid-template-columns: minmax(360px, 520px) 1fr minmax(280px, 340px);
+  gap: 16px;
+  align-items: start;
+  padding: 16px;
+}
+
+.middle-col {
+  display: grid;
   gap: 16px;
   align-items: start;
 }
 
-/* Middle column stacks controls + stream */
-.middle-col {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.controls-card {
-  position: sticky;
-  top: 16px;
-}
-.state-card {}
-.stream-card {}
-.stream-log {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  max-height: 240px;
-  overflow: auto;
-  padding: 8px;
-  border-radius: 8px;
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(255,255,255,0.08);
-  white-space: pre-wrap;
-}
-.button-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* --- Tile-based controls grid --- */
+/* Controls grid */
 .tiles-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 12px;
-  align-items: stretch;
 }
 
 .tile {
+  display: grid;
+  gap: 10px;
   padding: 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 1px 6px rgba(0,0,0,0.2);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 8px 24px rgba(0,0,0,0.25);
 }
 
-/* Visual greying for disabled tiles */
-.tile[data-disabled="true"] {
-  opacity: 0.55;
+.tile-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 160px)) auto;
+  gap: 10px;
+  align-items: center;
 }
 
-/* Make disabled buttons clearly greyed out */
+.button-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .MuiButton-root.Mui-disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   filter: grayscale(0.4);
 }
 
-/* Ensure a consistent control size */
 .fixed-width {
   min-width: 120px !important;
   height: 40px !important;
+}
+
+.MuiCard-root {
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.06);
+  background: #0b0d12;
 }
