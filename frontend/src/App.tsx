@@ -1,5 +1,6 @@
 // Path: frontend/src/App.tsx
-// NOTE: visuals unchanged. Only diagnostic logs added.
+// Uses react-chessboard's native promotion flow via onPromotionCheck/onPromotionPieceSelect.
+// Ensures promotion is always a single lowercase letter 'q'|'r'|'b'|'n' before posting to backend.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -202,12 +203,48 @@ export default function App() {
     }
   }, [gameId, isAIVsAI, state.over, isSelfPlaying, handleStart, closeStream])
 
+  // Utility: is this move a pawn promotion in the current FEN?
+  function isPromotion(fen: string, from: string, to: string, piece?: string): boolean {
+    try {
+      const pos = new Chess(fen)
+      const p = pos.get(from as any)
+      if (!p || p.type !== 'p') return false
+      const rankTo = to[1]
+      if (p.color === 'w' && rankTo === '8') return true
+      if (p.color === 'b' && rankTo === '1') return true
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  // Normalize promotion tokens from the board ('q','Q','wQ','queen', etc.) → 'q'|'r'|'b'|'n'
+  function normalizePromotion(input: unknown): 'q'|'r'|'b'|'n'|undefined {
+    const raw = String(input ?? '').trim().toLowerCase()
+    if (!raw) return undefined
+    const table: Record<string, 'q'|'r'|'b'|'n'> = {
+      q: 'q', queen: 'q', wq: 'q', bq: 'q',
+      r: 'r', rook:  'r', wr: 'r', br: 'r',
+      b: 'b', bishop:'b', wb: 'b', bb: 'b',
+      n: 'n', knight:'n', wn: 'n', bn: 'n',
+    }
+    if (table[raw]) return table[raw]
+    const c = raw[0]
+    return (c === 'q' || c === 'r' || c === 'b' || c === 'n') ? c : undefined
+  }
+
+  // HUMAN drop (non-promotion): apply immediately
   const onPieceDrop = useCallback(async (source: string, target: string) => {
-    // eslint-disable-next-line no-console
     console.debug('[UI] onPieceDrop', { source, target, gameId, mode, turn: state.turn })
     if (!gameId || state.over) return false
     if (isAIVsAI) return false
     if (isHumanVsAI && state.turn !== 'w') return false
+
+    // If this will be a promotion, let the board handle via its picker.
+    if (isPromotion(state.fen, source, target)) {
+      console.debug('[UI] promotion detected → board will show picker')
+      return false
+    }
 
     try {
       console.debug('[UI] postMove (human)', { source, target })
@@ -219,7 +256,6 @@ export default function App() {
       if (isHumanVsAI && !next.over) {
         if (pendingThink) { console.debug('[UI] think suppressed: pending'); return true }
         setPendingThink(true)
-
         console.debug('[ENGINE/think] start', {
           fen: next.fen, side: 'black', depth: blackDepth, rollouts: blackRollouts
         })
@@ -261,7 +297,77 @@ export default function App() {
       return false
     }
   }, [
-    gameId, state.over, isAIVsAI, isHumanVsAI, state.turn, pendingThink,
+    gameId, state.over, isAIVsAI, isHumanVsAI, state.turn, state.fen,
+    pendingThink, blackDepth, blackRollouts, openStream, closeStream
+  ])
+
+  // Let the board decide if a drop should trigger promotion UI.
+  const onPromotionCheck = useCallback((from: string, to: string, piece?: string) => {
+    const need = isPromotion(state.fen, from, to, piece)
+    console.debug('[UI] onPromotionCheck', { from, to, piece, need })
+    return need
+  }, [state.fen])
+
+  // Called when the user picks Queen/Rook/Bishop/Knight in the board’s UI.
+  const onPromotionPieceSelect = useCallback(async (piece: string, from: string, to: string) => {
+    if (!gameId) return false
+    const normalized = normalizePromotion(piece) ?? 'q'
+    console.debug('[UI] onPromotionPieceSelect', { pieceRaw: piece, normalized, from, to })
+
+    try {
+      const next = await postMove(gameId, from, to, normalized)
+      console.debug('[UI] postMove OK (promotion)', next.fen)
+      setState(next)
+      localStorage.setItem('lastGameId', next.gameId)
+
+      if (isHumanVsAI && !next.over) {
+        if (!pendingThink) {
+          setPendingThink(true)
+          console.debug('[ENGINE/think] start (after promotion)', {
+            fen: next.fen, side: 'black', depth: blackDepth, rollouts: blackRollouts
+          })
+          const es = think(next.fen, 'black', blackDepth, blackRollouts)
+          es.onopen = () => console.debug('[ENGINE/think] open')
+          es.onmessage = async (e) => {
+            console.debug('[ENGINE/think] onmessage raw', e.data)
+            try {
+              const msg = JSON.parse(e.data)
+              console.debug('[ENGINE/think] parsed', msg)
+              if (msg.type === 'bestmove' && typeof msg.move === 'string') {
+                const { from: ef, to: et, promotion: ep } = decodeUCIMove(msg.move)
+                console.debug('[ENGINE/think] bestmove → postMove', { gameId, ef, et, ep })
+                const after = await postMove(gameId, ef, et, ep)
+                console.debug('[ENGINE/think] postMove OK', after.fen)
+                setState(after)
+                localStorage.setItem('lastGameId', after.gameId)
+              } else if (msg.type === 'done') {
+                console.debug('[ENGINE/think] done')
+                setPendingThink(false)
+                closeStream()
+              }
+            } catch (err) {
+              console.error('[ENGINE/think] parse/apply failed', err, e.data)
+            }
+          }
+          es.onerror = (err) => {
+            console.error('[ENGINE/think] error', err)
+            setPendingThink(false)
+            closeStream()
+          }
+          openStream(es)
+        } else {
+          console.debug('[UI] think suppressed: pending (after promotion)')
+        }
+      }
+      // tell the board to accept the drop
+      return true
+    } catch (e) {
+      console.error('[UI] promotion apply failed', e)
+      // tell the board to cancel the drop
+      return false
+    }
+  }, [
+    gameId, isHumanVsAI, pendingThink,
     blackDepth, blackRollouts, openStream, closeStream
   ])
 
@@ -273,13 +379,13 @@ export default function App() {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // UI MARKUP (unchanged visuals)
+  // UI MARKUP (visuals unchanged)
   // ────────────────────────────────────────────────────────────────────────────
 
   return (
     <Box p={2}>
       <Grid container spacing={2}>
-        {/* Board column (smaller footprint) */}
+        {/* Board column */}
         <Grid item xs={12} md={5} lg={6}>
           <Card>
             <CardContent sx={{ p: 1.5 }}>
@@ -288,11 +394,14 @@ export default function App() {
                 position={state.fen}
                 boardWidth={420}
                 customBoardStyle={{ borderRadius: 8 }}
-                onPieceDrop={onPieceDrop}
                 boardOrientation={boardOrientation}
                 arePiecesDraggable={
                   !isAIVsAI && !state.over && !(isHumanVsAI && state.turn !== 'w')
                 }
+                onPieceDrop={onPieceDrop}
+                /* Promotion flow (let the board handle the dialog) */
+                onPromotionCheck={onPromotionCheck}
+                onPromotionPieceSelect={onPromotionPieceSelect}
               />
               <Box mt={1.5}>
                 <Typography variant="body2" color="text.secondary">
