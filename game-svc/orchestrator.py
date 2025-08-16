@@ -59,11 +59,15 @@ STORE = GameStore()
 # ————— Move application helpers —————
 PROMO_MAP = {'q':'q','r':'r','b':'b','n':'n'}
 
+# game-svc/orchestrator.py
 def apply_move(g: Game, from_sq: str, to_sq: str, promotion: Optional[str] = None) -> Game:
-    """Apply a move in UCI. Validate legality, including promotions.
-    Raises ValueError on illegal moves.
-    """
-    uci = (from_sq + to_sq + (PROMO_MAP.get(promotion.lower(), '') if promotion else '')).lower()
+    if promotion:
+        p = promotion.lower()
+        if p not in PROMO_MAP:
+            raise ValueError(f"invalid promotion piece: {promotion}")
+        uci = (from_sq + to_sq + p).lower()
+    else:
+        uci = (from_sq + to_sq).lower()
 
     try:
         move = chess.Move.from_uci(uci)
@@ -71,7 +75,6 @@ def apply_move(g: Game, from_sq: str, to_sq: str, promotion: Optional[str] = Non
         raise ValueError(f"invalid move format: {uci}")
 
     if move not in g.board.legal_moves:
-        # For under-specified promotions, python-chess may allow implicit guesses; disallow them
         raise ValueError(f"illegal move: {uci}")
 
     g.board.push(move)
