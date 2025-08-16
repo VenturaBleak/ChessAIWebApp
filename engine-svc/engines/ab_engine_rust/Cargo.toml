@@ -1,0 +1,12 @@
+[package]
+name = "ab_engine_rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ab_engine_rust"
+path = "src/main.rs"
+
+[dependencies]
+chess = "3"
+ahash = "0.8"
