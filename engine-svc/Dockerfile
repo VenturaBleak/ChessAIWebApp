@@ -14,11 +14,8 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Default to included reference engine; override in compose:
-#   environment:
-#     UCI_ENGINE_CMD: "stockfish"
-ENV UCI_ENGINE_PATH=/app/uci_reference_engine.py
-ENV UCI_ENGINE_CMD="python /app/uci_reference_engine.py"
+# Default to loader+AB; docker-compose can override to another engine.
+ENV UCI_ENGINE_CMD="python /app/uci_main.py --engine ab"
 
 EXPOSE 8001
 CMD ["uvicorn","app:app","--host","0.0.0.0","--port","8001"]
