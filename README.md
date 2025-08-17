@@ -1,4 +1,4 @@
-# repo_extract
+# ChessAIWebApp
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-informational)
 
