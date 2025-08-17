@@ -47,7 +47,6 @@ This repository provides a **full‑stack chess app**: a React frontend, Python 
     ui_screenshot1.png
     ui_screenshot2.png
   engine-svc/
-    engines/
     .dockerignore
     Dockerfile
     app.py
@@ -55,7 +54,16 @@ This repository provides a **full‑stack chess app**: a React frontend, Python 
     uci_bridge.py
     uci_main.py
     uci_parser.py
-    engine-svc/engines/
+    engines/
+      ab_engine_rust/
+        src/
+          eval.rs
+          lib.rs
+          main.rs
+          ordering.rs
+          tt.rs
+          types.rs
+        Cargo.toml
       ab_engine.py
       base.py
   frontend/
