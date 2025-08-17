@@ -29,7 +29,6 @@ const LMR_MIN_DEPTH: i32 = 3;
 const LMR_BASE_REDUCTION: i32 = 1;
 
 // Null-move pruning (DISABLED: crate lacks safe null move)
-// Kept for config completeness, but unused to avoid bad cutoffs.
 const NMP_MIN_DEPTH: i32 = 3;
 const NMP_R: i32 = 2;
 
@@ -91,6 +90,18 @@ fn piece_val(pc: Piece) -> i32 {
         Piece::Rook => R_,
         Piece::Queen => Q_,
         Piece::King => 0,
+    }
+}
+
+#[inline]
+fn piece_code(pc: Piece) -> u8 {
+    match pc {
+        Piece::Pawn => 1,
+        Piece::Knight => 2,
+        Piece::Bishop => 3,
+        Piece::Rook => 4,
+        Piece::Queen => 5,
+        Piece::King => 6,
     }
 }
 
@@ -287,12 +298,13 @@ impl TT {
             }
         }
 
-        // Otherwise replace the "worst" slot: prefer deeper, then newer.
+        // Otherwise replace the "worst" slot: prefer shallower, then older.
         let mut replace_at = 0usize;
         for (j, e) in bucket.iter().enumerate() {
             let r = &bucket[replace_at];
             let worse_depth = e.depth < r.depth;
-            let same_depth_older = e.depth == r.depth && e.age.wrapping_sub(r.age) > 0;
+            // FIX: evict the *older* entry on depth tie (quality > speed)
+            let same_depth_older = e.depth == r.depth && r.age.wrapping_sub(e.age) > 0;
             if worse_depth || same_depth_older { replace_at = j; }
         }
         bucket[replace_at] = TTEntry {
@@ -328,7 +340,8 @@ struct Search {
     stop: Arc<AtomicBool>,
     tt: TT,
     killers: HashMap<i32, (Option<ChessMove>, Option<ChessMove>)>,
-    history: HashMap<(Color, Square), i32>,
+    // Piece- and from-to-aware history to reduce noise
+    history: HashMap<(Color, Square, Square, u8), i32>,
 }
 
 impl Search {
@@ -413,16 +426,6 @@ impl Search {
         10_000 + victim_val * 10 - attacker_val
     }
 
-    fn likely_zugzwang(&self, b: &Board) -> bool {
-        let np = |c: Color| {
-            320 * count_pieces(b, Piece::Knight, c)
-            + 330 * count_pieces(b, Piece::Bishop, c)
-            + 500 * count_pieces(b, Piece::Rook,   c)
-            + 900 * count_pieces(b, Piece::Queen,  c)
-        };
-        np(Color::White) + np(Color::Black) <= 1000
-    }
-
     fn ordered_moves(
         &self,
         b: &Board,
@@ -440,7 +443,10 @@ impl Search {
             if let Some(k2) = killers.1 { if m == k2 { k += 5_000_000; } }
             // SMALL bump for 'gives check' to avoid biasing toward perpetual checks
             if b.make_move_new(m).checkers().popcnt() > 0 { k += 1_000; }
-            k += *hist.get(&(us, m.get_dest())).unwrap_or(&0) as i64;
+            // Piece-aware (from, to, piece) history
+            if let Some(pc) = b.piece_on(m.get_source()) {
+                k += *hist.get(&(us, m.get_source(), m.get_dest(), piece_code(pc))).unwrap_or(&0) as i64;
+            }
             if self.is_capture(b, m) { k += 1; } // tiny stabilization
             Reverse(k)
         });
@@ -468,8 +474,9 @@ impl Search {
         let mut noisy = Vec::new();
         for m in MoveGen::new_legal(b) {
             let cap = self.is_capture(b, m);
+            let promo = m.get_promotion().is_some(); // NEW: include promotions in QS
             let gives_check = if Q_INCLUDE_CHECKS { b.make_move_new(m).checkers().popcnt() > 0 } else { false };
-            if cap || gives_check { noisy.push(m); }
+            if cap || gives_check || promo { noisy.push(m); }
         }
         noisy.sort_by_key(|&m| Reverse(self.mvv_lva(b, m)));
 
@@ -491,6 +498,7 @@ impl Search {
         beta: i32,
         ply: i32,
         is_pv: bool,
+        parent_eval: Option<i32>,
         rep_stack: &mut Vec<u64>,
     ) -> i32 {
         if self.stop.load(Ordering::Relaxed) { return alpha; }
@@ -529,7 +537,9 @@ impl Search {
             return rv;
         }
 
-        // Null-move pruning intentionally disabled (see header).
+        // Node static eval (for improving heuristic and pruning guards)
+        let node_eval = self.evaluate(b);
+        let improving = parent_eval.map(|pe| node_eval >= pe - 40).unwrap_or(false);
 
         let orig_alpha = alpha;
         let mut best_move: Option<ChessMove> = None;
@@ -542,9 +552,6 @@ impl Search {
         // Endgame-aware pruning guard
         let endgame_like = is_endgame_like(b);
 
-        let mut static_eval: Option<i32> = None;
-        if local_depth == 1 { static_eval = Some(self.evaluate(b)); }
-
         let mut move_index = 0usize;
         for m in moves {
             if self.stop.load(Ordering::Relaxed) { break; }
@@ -553,43 +560,51 @@ impl Search {
             let nb = b.make_move_new(m);
             let gives_chk = nb.checkers().popcnt() > 0;
 
-            // Frontier futility on quiets at depth == 1 (disabled in endgames)
-            if !endgame_like && local_depth == 1 && !is_cap && !gives_chk {
-                let see = static_eval.unwrap_or_else(|| self.evaluate(b));
-                if see + FUTILITY_MARGIN_BASE <= alpha {
+            // Frontier futility on quiets at depth == 1 (disabled in endgames and in PV and when improving)
+            if !endgame_like && !is_pv && !improving && local_depth == 1 && !is_cap && !gives_chk {
+                // Tighter margin to avoid losing refutations under narrow α
+                if node_eval + (FUTILITY_MARGIN_BASE / 2) <= alpha {
                     move_index += 1;
                     continue;
                 }
             }
 
-            // Move-count pruning: skip very late quiets (disabled in endgames)
-            if !endgame_like && local_depth >= MCP_MIN_DEPTH && move_index >= MCP_START_AT && !is_cap && !gives_chk {
-                move_index += 1;
-                continue;
+            // Move-count pruning: skip very late quiets
+            // Disabled in endgames, PV, near root (ply<=2), and when improving.
+            if !endgame_like && !is_pv && !improving && ply > 2 && local_depth >= MCP_MIN_DEPTH && !is_cap && !gives_chk {
+                // Depth-scaled start so deeper search is *less* risky to prune
+                let mut dyn_start = MCP_START_AT + (local_depth as usize); // postpone more aggressively
+                // also give a little extra room if α is tight (quality > speed)
+                if beta - alpha <= 2 * ASP_WINDOW { dyn_start += 2; }
+                if move_index >= dyn_start {
+                    move_index += 1;
+                    continue;
+                }
             }
 
             let child_in_check = gives_chk;
             let mut score;
 
-            // PVS + LMR (LMR disabled for quiets in endgames to see king approach)
+            // PVS + LMR
+            // Safer LMR: reduce only on later quiets, not PV, not improving, not checking moves.
             let do_lmr = local_depth >= LMR_MIN_DEPTH
                 && !is_pv && !is_cap && !gives_chk && !child_in_check
-                && !endgame_like;
+                && !endgame_like && !improving && move_index >= 4;
 
             if do_lmr {
-                let reduce = LMR_BASE_REDUCTION + if move_index >= 4 { 1 } else { 0 };
+                let reduce = LMR_BASE_REDUCTION + if move_index >= 6 { 1 } else { 0 };
                 let new_depth = (local_depth - 1 - reduce).max(1);
-                score = -self.negamax(&nb, new_depth, -alpha - 1, -alpha, ply + 1, false, rep_stack);
+                score = -self.negamax(&nb, new_depth, -alpha - 1, -alpha, ply + 1, false, Some(node_eval), rep_stack);
                 if score > alpha {
-                    score = -self.negamax(&nb, local_depth - 1, -beta, -alpha, ply + 1, false, rep_stack);
+                    score = -self.negamax(&nb, local_depth - 1, -beta, -alpha, ply + 1, false, Some(node_eval), rep_stack);
                 }
             } else {
                 if move_index == 0 {
-                    score = -self.negamax(&nb, local_depth - 1, -beta, -alpha, ply + 1, is_pv, rep_stack);
+                    score = -self.negamax(&nb, local_depth - 1, -beta, -alpha, ply + 1, true, Some(node_eval), rep_stack);
                 } else {
-                    score = -self.negamax(&nb, local_depth - 1, -alpha - 1, -alpha, ply + 1, false, rep_stack);
+                    score = -self.negamax(&nb, local_depth - 1, -alpha - 1, -alpha, ply + 1, false, Some(node_eval), rep_stack);
                     if score > alpha && score < beta {
-                        score = -self.negamax(&nb, local_depth - 1, -beta, -alpha, ply + 1, true, rep_stack);
+                        score = -self.negamax(&nb, local_depth - 1, -beta, -alpha, ply + 1, true, Some(node_eval), rep_stack);
                     }
                 }
             }
@@ -607,9 +622,11 @@ impl Search {
                         let entry = self.killers.entry(ply).or_insert((None, None));
                         let (k0, _k1) = *entry;
                         self.killers.insert(ply, (Some(m), k0));
-                        let keyh = (b.side_to_move(), m.get_dest());
-                        let e = self.history.get(&keyh).copied().unwrap_or(0) + local_depth * local_depth;
-                        self.history.insert(keyh, e);
+                        if let Some(pc) = b.piece_on(m.get_source()) {
+                            let keyh = (b.side_to_move(), m.get_source(), m.get_dest(), piece_code(pc));
+                            let e = self.history.get(&keyh).copied().unwrap_or(0) + local_depth * local_depth;
+                            self.history.insert(keyh, e);
+                        }
                     }
                     break;
                 }
@@ -697,6 +714,8 @@ fn root_search(
     let tt_move = search.tt.probe(board_key(b)).and_then(|e| unpack_move(e.best));
     let mut moves = search.ordered_moves(b, tt_move, killers);
 
+    let parent_eval = Some(search.evaluate(b));
+
     for (i, m) in moves.drain(..).enumerate() {
         if search.stop.load(Ordering::Relaxed) { break; }
         let nb = b.make_move_new(m);
@@ -704,11 +723,11 @@ fn root_search(
         let mut rep_stack = vec![board_key(b)];
         let mut score;
         if i == 0 {
-            score = -search.negamax(&nb, depth - 1, -beta, -a, 1, true, &mut rep_stack);
+            score = -search.negamax(&nb, depth - 1, -beta, -a, 1, true, parent_eval, &mut rep_stack);
         } else {
-            score = -search.negamax(&nb, depth - 1, -a - 1, -a, 1, false, &mut rep_stack);
+            score = -search.negamax(&nb, depth - 1, -a - 1, -a, 1, false, parent_eval, &mut rep_stack);
             if score > a && score < beta {
-                score = -search.negamax(&nb, depth - 1, -beta, -a, 1, true, &mut rep_stack);
+                score = -search.negamax(&nb, depth - 1, -beta, -a, 1, true, parent_eval, &mut rep_stack);
             }
         }
 
