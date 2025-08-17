@@ -7,7 +7,7 @@ services:
     build: ./engine-svc
     environment:
       # simplest: use the wrapper which boots ABEngine
-      UCI_ENGINE_CMD: /app/ab_engine_rust   # <— run the Rust binary
+      ENGINE_CMD: /app/pyrefengine
       #UCI_ENGINE_CMD: python /app/uci_main.py --engine ab   # or mcts, etc.
       ENGINE_READY_TIMEOUT_MS: "5000"
     networks: [chessnet]
